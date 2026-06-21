@@ -33,7 +33,7 @@ When a Product is deleted:
 **Fields:**
 - `order_id` - Int - Primary Key - Auto-incrementing - Required
 - `customer_id` - Int - Required
-- `total_price` - String - Required (stored as string to preserve precision for currency)
+- `total_price` - Float - Required
 - `status` - String - Required
 - `created_at` - DateTime - Required - Default: `now()`
 
@@ -75,6 +75,24 @@ When an Order is deleted:
   - Foreign key: `product_id` references Product.id
   - Cascade rule: `onDelete: Cascade`
 
+**Price Snapshot Pattern:**
+OrderItem stores its own `price` field instead of referencing Product.price. This is intentional:
+- **At order creation time:** The price is fetched from the Product table during validation and copied into OrderItem
+- **After order creation:** The OrderItem.price remains frozen, even if Product.price changes
+- **Why this matters:**
+  - Historical accuracy: orders reflect what the customer actually paid
+  - Price changes don't affect past orders (no retroactive price updates)
+  - Reporting: Order.total_price remains accurate even if product prices fluctuate
+  - Audit trail: can compare historical prices vs current prices
+
+**Example:**
+1. Product "Laptop" has price $999.99
+2. Customer orders 1 Laptop → OrderItem stores price: $999.99
+3. Store updates Product "Laptop" price to $1099.99
+4. OrderItem.price still shows $999.99 (customer paid $999.99, not $1099.99)
+5. Order.total_price remains correct based on snapshot prices
+6. **Key Point:** Updating Product.price has NO effect on existing OrderItems
+
 **Cascade Behavior:**
 OrderItem sits at the intersection of two cascade delete rules:
 1. If the parent Order is deleted → this OrderItem is deleted
@@ -84,12 +102,13 @@ OrderItem sits at the intersection of two cascade delete rules:
 If a Product is deleted while it appears in an active Order:
 - The OrderItem records linking that product to any orders will be deleted (due to Product cascade)
 - The Order itself remains intact but loses those line items
-- The Order's total_price becomes stale and needs recalculation
+- The Order's total_price becomes stale (doesn't include deleted items)
 - **Design Decision:** We accept this behavior because:
   - Products being deleted mid-order is an edge case that should be handled by business logic
   - Keeping orphaned order items would break referential integrity
   - Orders maintain a snapshot of the purchase event even if line items are removed
   - Alternative would be to prevent product deletion if referenced in orders, but that adds complexity
+- **Note:** Even though the OrderItem is deleted, it had captured the price at order time, so there's a historical record before deletion
 
 ---
 
@@ -295,7 +314,7 @@ All error responses follow this shape:
     {
       "order_id": 1,
       "customer_id": 123,
-      "total_price": "1999.98",
+      "total_price": 1999.98,
       "status": "pending",
       "created_at": "2026-06-20T10:30:00Z"
     }
@@ -324,7 +343,7 @@ All error responses follow this shape:
   "order": {
     "order_id": 1,
     "customer_id": 123,
-    "total_price": "1999.98",
+    "total_price": 1999.98,
     "status": "pending",
     "created_at": "2026-06-20T10:30:00Z",
     "items": [
@@ -385,7 +404,7 @@ All error responses follow this shape:
   "order": {
     "order_id": 1,
     "customer_id": 123,
-    "total_price": "2499.97",
+    "total_price": 2499.97,
     "status": "pending",
     "created_at": "2026-06-20T10:30:00Z",
     "items": [
@@ -445,7 +464,7 @@ All error responses follow this shape:
   "order": {
     "order_id": 1,
     "customer_id": 123,
-    "total_price": "2499.97",
+    "total_price": 2499.97,
     "status": "completed",
     "created_at": "2026-06-20T10:30:00Z"
   }
@@ -512,100 +531,146 @@ The client sends:
 
 ### Step-by-Step Data Layer Operations
 
-#### Step 1: Validation (Before Transaction)
+### Phase 1: Validation (Outside Transaction)
+
+#### Step 1: Request Structure Validation
 1. Check that `customer_id`, `status`, and `items` are present
 2. Verify `items` is a non-empty array
 3. Validate each item has `product_id` (integer) and `quantity` (positive integer)
 
 If validation fails → return 400 Bad Request immediately, no database operations
 
-#### Step 2: Begin Transaction
-Use Prisma transaction to ensure atomicity:
+#### Step 2: Batch Fetch All Products
+Extract all product IDs from the request and fetch them in a single query:
 ```javascript
-await prisma.$transaction(async (tx) => {
-  // All operations happen inside this transaction
+const productIds = items.map(item => parseInt(item.product_id))
+const products = await prisma.product.findMany({
+  where: { id: { in: productIds } }
 })
 ```
 
-#### Step 3: Fetch Product Data (Inside Transaction)
-For each item in the request:
-1. Query the Product table for the product_id
-2. If product doesn't exist → throw error, rollback transaction → return 404 Not Found
-3. If product exists → extract current price
-4. Store: `{ product_id, quantity, price: product.price }`
+**Why batch fetch?**
+- One database query instead of N queries (more efficient)
+- Faster for orders with multiple items
+- Still validates all products exist before creating order
+
+#### Step 3: Validate All Products Exist
+Check if all requested products were found:
+```javascript
+if (products.length !== productIds.length) {
+  const foundIds = products.map(p => p.id)
+  const missingId = productIds.find(id => !foundIds.includes(id))
+  throw new Error(`Product with ID ${missingId} not found`)
+}
+```
+
+If any product is missing → return 404 Not Found immediately, no database operations
+
+**Why validate before transaction?**
+- Fail fast: clients get validation errors immediately
+- Shorter transaction time: only writes happen in transaction
+- Better performance: no rollback needed for validation errors
+
+#### Step 4: Build Items with Prices
+Create a map of products and attach prices to items:
+```javascript
+const productMap = Object.fromEntries(products.map(p => [p.id, p]))
+const itemsWithPrices = items.map(item => ({
+  product_id: parseInt(item.product_id),
+  quantity: parseInt(item.quantity),
+  price: productMap[parseInt(item.product_id)].price
+}))
+```
 
 **Why fetch prices here?**
 - Client doesn't send prices (security: prevent price tampering)
 - We capture price at order time (historical accuracy: product prices may change later)
 - Each order item stores the price it was purchased at
 
-#### Step 4: Calculate Total Price (Inside Transaction)
-1. For each validated item: `item.price * item.quantity`
-2. Sum all item subtotals
-3. Convert to string for storage: `total_price = sum.toFixed(2)`
+#### Step 5: Calculate Total Price
+Calculate in memory before opening transaction:
+```javascript
+const total_price = itemsWithPrices
+  .reduce((sum, item) => sum + (item.price * item.quantity), 0)
+```
 
 **Why calculate server-side?**
 - Client cannot be trusted with financial calculations
 - Prevents price manipulation attacks
 - Ensures consistency with product prices fetched from database
 
-#### Step 5: Create Order Record (Inside Transaction)
-Execute:
+---
+
+### Phase 2: Transaction (Only Writes)
+
+#### Step 6: Begin Transaction
+All validation is complete. Now open transaction for writes only:
+```javascript
+const result = await prisma.$transaction(async (tx) => {
+  // Only database writes happen here
+})
+```
+
+**Why transaction is shorter:**
+- No validation logic inside (already done)
+- No conditional branches (data is clean)
+- Minimal lock time on database
+- Better concurrency for other requests
+
+#### Step 7: Create Order Record (Inside Transaction)
 ```javascript
 const order = await tx.order.create({
   data: {
-    customer_id,
-    total_price,
+    customer_id: parseInt(customer_id),
     status,
-    created_at: new Date()
+    total_price
   }
 })
 ```
 
 Capture the auto-generated `order.order_id` for next step.
 
-#### Step 6: Create Order Item Records (Inside Transaction)
-For each item in the validated items list:
+#### Step 8: Create All Order Items (Inside Transaction)
+Use `createMany` for batch insert:
 ```javascript
-await tx.orderItem.create({
-  data: {
+await tx.orderItem.createMany({
+  data: itemsWithPrices.map(item => ({
     order_id: order.order_id,
     product_id: item.product_id,
     quantity: item.quantity,
     price: item.price
-  }
+  }))
 })
 ```
 
-**Batch or Loop?**
-- Can use `createMany` for efficiency, but must ensure all items reference the same order_id
-- Alternative: loop with individual `create` calls for better error messages
+**Why createMany?**
+- Single INSERT statement for all items (most efficient)
+- Atomic operation: all items created or none
+- Much faster than loop of individual creates
 
-#### Step 7: Fetch Created Order with Items (Inside Transaction)
-Before committing, fetch the complete order with joined order items:
+#### Step 9: Fetch Created Order with Items (Inside Transaction)
+Before committing, fetch the complete order:
 ```javascript
-const completeOrder = await tx.order.findUnique({
+return await tx.order.findUnique({
   where: { order_id: order.order_id },
-  include: {
-    items: true
-  }
+  include: { items: true }
 })
 ```
 
 This is the response body we'll return to the client.
 
-#### Step 8: Commit Transaction
+#### Step 10: Commit Transaction
 If all operations succeed:
 - Transaction commits automatically
 - Database changes are persisted
-- Return 201 Created with `completeOrder`
+- Return 201 Created with complete order
 
 If any operation fails:
 - Transaction rolls back automatically
 - No database changes persist
-- Return appropriate error status and message
+- Return 500 Internal Server Error
 
-### Error Scenarios and Rollback Behavior
+### Error Scenarios and Flow Behavior
 
 #### Scenario 1: Nonexistent Product
 **Request:**
@@ -620,14 +685,17 @@ If any operation fails:
 ```
 
 **What happens:**
-1. Transaction begins
-2. Step 3: Query for product_id=999 returns null
-3. Throw error: "Product with ID 999 not found"
-4. Transaction rolls back
-5. No Order created, no OrderItem created
-6. Response: 404 Not Found
+1. **Phase 1 (Validation):**
+   - Step 1: Request structure validated ✓
+   - Step 2: Batch fetch products → product_id=999 not found
+   - Step 3: Check fails → `products.length (0) !== productIds.length (1)`
+   - Return 404 Not Found immediately
+2. **Phase 2 (Transaction):**
+   - Never reached
+3. **Database state:** Unchanged (no queries except read)
+4. **Response:** 404 Not Found
 
-**Key Point:** The order is never created because product validation happens before order creation within the transaction.
+**Key Point:** Transaction never opens. Validation catches the error before any writes.
 
 #### Scenario 2: Mixed Valid/Invalid Products
 **Request:**
@@ -643,28 +711,54 @@ If any operation fails:
 ```
 
 **What happens:**
-1. Transaction begins
-2. Step 3: Fetch product_id=5 → success
-3. Step 3: Fetch product_id=999 → fails
-4. Throw error on first invalid product
-5. Transaction rolls back
-6. Order item for product_id=5 is NOT created (rollback undoes everything)
-7. Response: 404 Not Found with message about product 999
+1. **Phase 1 (Validation):**
+   - Step 1: Request structure validated ✓
+   - Step 2: Batch fetch `[5, 999]` → only product 5 found
+   - Step 3: Check fails → `products.length (1) !== productIds.length (2)`
+   - Find missing ID: 999
+   - Return 404 Not Found immediately
+2. **Phase 2 (Transaction):**
+   - Never reached
+3. **Database state:** Unchanged
+4. **Response:** 404 Not Found with message "Product with ID 999 not found"
 
-**Key Point:** Even though one product was valid, nothing is saved. All-or-nothing.
+**Key Point:** Even though product 5 exists, nothing is created. Validation is all-or-nothing before transaction opens.
 
-#### Scenario 3: Database Constraint Violation
-**Request:** (Valid, but database fails mid-transaction due to infrastructure issue)
+#### Scenario 3: Database Constraint Violation During Transaction
+**Request:** (All validation passes, but database fails mid-transaction)
 
 **What happens:**
-1. Transaction begins
-2. Steps 3-5 succeed
-3. Step 6: Database connection lost or constraint violation
-4. Prisma throws error
-5. Transaction rolls back automatically
-6. Response: 500 Internal Server Error
+1. **Phase 1 (Validation):**
+   - All steps succeed ✓
+   - Products exist, prices calculated, ready to write
+2. **Phase 2 (Transaction):**
+   - Step 6: Transaction begins
+   - Step 7: Create order → success
+   - Step 8: Create order items → database connection lost or constraint violation
+   - Prisma throws error
+   - Transaction rolls back automatically
+3. **Database state:** Unchanged (rollback reverted the order creation)
+4. **Response:** 500 Internal Server Error
 
-**Key Point:** Transactional integrity protects against partial writes even during infrastructure failures.
+**Key Point:** Even though validation passed, transactional integrity protects against partial writes during infrastructure failures.
+
+#### Scenario 4: Product Deleted Between Validation and Transaction (Race Condition)
+**Request:** (Valid, but product deleted after validation completes)
+
+**What happens:**
+1. **Phase 1 (Validation):**
+   - Step 2: Fetch product_id=5 → exists ✓
+   - Step 3-5: All validation succeeds ✓
+2. **[Another request deletes product 5 here]**
+3. **Phase 2 (Transaction):**
+   - Step 7: Create order → success
+   - Step 8: Create order items with product_id=5 → foreign key violation
+   - Prisma throws error (P2003: foreign key constraint failed)
+   - Transaction rolls back
+4. **Database state:** Unchanged (rollback)
+5. **Response:** 500 Internal Server Error
+
+**Key Point:** This is an extremely rare edge case (millisecond window). For a simple project with no concurrent users, this won't happen. In production, we could catch P2003 and return a better error message.
 
 ### Response Success Case
 If everything succeeds, return:
@@ -673,7 +767,7 @@ If everything succeeds, return:
   "order": {
     "order_id": 1,
     "customer_id": 123,
-    "total_price": "2499.97",
+    "total_price": 2499.97,
     "status": "pending",
     "created_at": "2026-06-20T10:30:00Z",
     "items": [
@@ -694,45 +788,75 @@ If everything succeeds, return:
 }
 ```
 
-### Prisma Transaction Pattern
+### Implementation Pattern (Validate-First Flow)
 ```javascript
 app.post('/orders', async (req, res) => {
-  const { customer_id, status, items } = req.body
-  
-  // Validation happens before transaction
-  if (!customer_id || !status || !items || items.length === 0) {
-    return res.status(400).json({ error: "Missing required fields" })
-  }
-  
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      // Fetch all products and validate
-      const itemsWithPrices = []
-      for (const item of items) {
-        const product = await tx.product.findUnique({
-          where: { id: item.product_id }
-        })
-        if (!product) {
-          throw new Error(`Product with ID ${item.product_id} not found`)
-        }
-        itemsWithPrices.push({
-          product_id: item.product_id,
-          quantity: item.quantity,
-          price: product.price
+    const { customer_id, status, items } = req.body
+    
+    // ========== PHASE 1: VALIDATION (Outside Transaction) ==========
+    
+    // Step 1: Validate request structure
+    if (!customer_id || !status || !items || items.length === 0) {
+      return res.status(400).json({
+        error: "Missing required fields: customer_id, status, items"
+      })
+    }
+    
+    // Validate each item
+    for (const item of items) {
+      if (!item.product_id || !item.quantity) {
+        return res.status(400).json({
+          error: "Each item must have product_id and quantity"
         })
       }
-      
-      // Calculate total
-      const total_price = itemsWithPrices
-        .reduce((sum, item) => sum + (item.price * item.quantity), 0)
-        .toFixed(2)
-      
-      // Create order
+      if (parseInt(item.quantity) <= 0) {
+        return res.status(400).json({
+          error: `Invalid quantity for product ${item.product_id}`
+        })
+      }
+    }
+    
+    // Step 2: Batch fetch all products
+    const productIds = items.map(item => parseInt(item.product_id))
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } }
+    })
+    
+    // Step 3: Validate all products exist
+    if (products.length !== productIds.length) {
+      const foundIds = products.map(p => p.id)
+      const missingId = productIds.find(id => !foundIds.includes(id))
+      return res.status(404).json({
+        error: `Product with ID ${missingId} not found`
+      })
+    }
+    
+    // Step 4: Build items with prices
+    const productMap = Object.fromEntries(products.map(p => [p.id, p]))
+    const itemsWithPrices = items.map(item => ({
+      product_id: parseInt(item.product_id),
+      quantity: parseInt(item.quantity),
+      price: productMap[parseInt(item.product_id)].price
+    }))
+    
+    // Step 5: Calculate total price
+    const total_price = itemsWithPrices
+      .reduce((sum, item) => sum + (item.price * item.quantity), 0)
+    
+    // ========== PHASE 2: TRANSACTION (Only Writes) ==========
+    
+    const result = await prisma.$transaction(async (tx) => {
+      // Step 7: Create order
       const order = await tx.order.create({
-        data: { customer_id, status, total_price, created_at: new Date() }
+        data: {
+          customer_id: parseInt(customer_id),
+          status,
+          total_price
+        }
       })
       
-      // Create order items
+      // Step 8: Create all order items (batch)
       await tx.orderItem.createMany({
         data: itemsWithPrices.map(item => ({
           order_id: order.order_id,
@@ -742,7 +866,7 @@ app.post('/orders', async (req, res) => {
         }))
       })
       
-      // Fetch complete order with items
+      // Step 9: Fetch complete order with items
       return await tx.order.findUnique({
         where: { order_id: order.order_id },
         include: { items: true }
@@ -752,26 +876,33 @@ app.post('/orders', async (req, res) => {
     res.status(201).json({ order: result })
     
   } catch (error) {
-    if (error.message.includes('not found')) {
-      res.status(404).json({ error: error.message })
-    } else {
-      res.status(500).json({ error: "Transaction failed" })
-    }
+    res.status(500).json({ error: "Transaction failed: unable to create order" })
   }
 })
 ```
 
-### Why This Matters
-The transactional flow ensures:
-1. **Atomicity:** Order and all its items are created together or not at all
-2. **Consistency:** Total price always matches the sum of order items
-3. **Isolation:** Concurrent requests don't interfere with each other
-4. **Durability:** Once the response is sent, the data is guaranteed to be saved
+### Why This Validate-First Approach Matters
 
-Without transactions, we could end up with:
-- Orders with no items
-- Orders with only some items
-- Incorrect total prices
-- Database corruption from partial writes
+**Benefits:**
+1. **Atomicity:** Order and all its items are created together or not at all (transaction guarantees)
+2. **Consistency:** Total price always matches the sum of order items (calculated before transaction)
+3. **Performance:** Shorter transaction time means better concurrency and less database lock contention
+4. **Fail Fast:** Invalid requests are rejected immediately without touching the database
+5. **Clear Errors:** Validation errors return specific 400/404 responses instead of generic 500s
+6. **Simpler Transaction:** Transaction code has no conditional logic, only writes
 
-This is why POST /orders is the most critical endpoint to get right.
+**What We Prevent:**
+- Orders with no items (validation catches empty arrays)
+- Orders with only some items (batch validation is all-or-nothing)
+- Orders with nonexistent products (validation catches before transaction opens)
+- Incorrect total prices (calculated from actual product prices, not client input)
+- Database corruption from partial writes (transaction rollback protection)
+
+**The Two-Phase Pattern:**
+```
+Phase 1 (Validation): Read + Validate + Calculate
+  ↓ (fail fast on any error)
+Phase 2 (Transaction): Write + Write + Commit
+```
+
+This separation makes POST /orders both correct (transactional) and efficient (short locks).
