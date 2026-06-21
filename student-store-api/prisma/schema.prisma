@@ -21,3 +21,11 @@ model Product {
   image_url   String
   category    String
 }
+
+model Order {
+  order_id    Int      @id @default(autoincrement())
+  customer_id Int
+  total_price Float
+  status      String
+  created_at  DateTime @default(now())
+}

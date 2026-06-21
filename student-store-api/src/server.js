@@ -1,5 +1,6 @@
 const express = require("express");
 const Product = require("./models/product");
+const Order = require("./models/order");
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -113,6 +114,111 @@ app.delete("/products/:id", async (req, res) => {
             return res.status(404).json({ error: "Product not found" })
         }
         res.status(500).json({ error: "Failed to delete product" })
+    }
+})
+
+// GET /orders - Fetch all orders
+app.get("/orders", async (req, res) => {
+    try {
+        const orders = await Order.getAll()
+        res.status(200).json({ orders })
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch orders" })
+    }
+})
+
+// GET /orders/:order_id - Fetch a specific order with items
+app.get("/orders/:order_id", async (req, res) => {
+    try {
+        const { order_id } = req.params
+
+        if (isNaN(order_id)) {
+            return res.status(400).json({ error: "Invalid order ID" })
+        }
+
+        const order = await Order.getById(order_id)
+
+        if (!order) {
+            return res.status(404).json({ error: "Order not found" })
+        }
+
+        res.status(200).json({ order })
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch order" })
+    }
+})
+
+// POST /orders - Create a new order
+app.post("/orders", async (req, res) => {
+    try {
+        const { customer_id, status, total_price } = req.body
+
+        if (!customer_id || !status || total_price === undefined) {
+            return res.status(400).json({
+                error: "Missing required fields: customer_id, status, total_price"
+            })
+        }
+
+        if (isNaN(total_price) || parseFloat(total_price) < 0) {
+            return res.status(400).json({
+                error: "Invalid total_price: must be a non-negative number"
+            })
+        }
+
+        const order = await Order.create(customer_id, status, total_price)
+        res.status(201).json({ order })
+    } catch (error) {
+        res.status(500).json({ error: "Failed to create order" })
+    }
+})
+
+// PUT /orders/:order_id - Update an order
+app.put("/orders/:order_id", async (req, res) => {
+    try {
+        const { order_id } = req.params
+        const { status, total_price } = req.body
+
+        if (isNaN(order_id)) {
+            return res.status(400).json({ error: "Invalid order ID" })
+        }
+
+        const hasValidFields = status || total_price !== undefined
+        if (!hasValidFields) {
+            return res.status(400).json({ error: "No valid fields provided for update" })
+        }
+
+        if (total_price !== undefined && (isNaN(total_price) || parseFloat(total_price) < 0)) {
+            return res.status(400).json({
+                error: "Invalid total_price: must be a non-negative number"
+            })
+        }
+
+        const order = await Order.update(order_id, { status, total_price })
+        res.status(200).json({ order })
+    } catch (error) {
+        if (error.code === 'P2025') {
+            return res.status(404).json({ error: "Order not found" })
+        }
+        res.status(500).json({ error: "Failed to update order" })
+    }
+})
+
+// DELETE /orders/:order_id - Delete an order
+app.delete("/orders/:order_id", async (req, res) => {
+    try {
+        const { order_id } = req.params
+
+        if (isNaN(order_id)) {
+            return res.status(400).json({ error: "Invalid order ID" })
+        }
+
+        await Order.delete(order_id)
+        res.status(200).json({ message: "Order deleted successfully" })
+    } catch (error) {
+        if (error.code === 'P2025') {
+            return res.status(404).json({ error: "Order not found" })
+        }
+        res.status(500).json({ error: "Failed to delete order" })
     }
 })
 
