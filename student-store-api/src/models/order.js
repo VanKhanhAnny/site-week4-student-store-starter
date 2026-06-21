@@ -28,6 +28,35 @@ class Order {
     })
   }
 
+  static async createWithItems(customer_id, status, total_price, itemsWithPrices) {
+    return await prisma.$transaction(async (tx) => {
+      // Step 7: Create order
+      const order = await tx.order.create({
+        data: {
+          customer_id: parseInt(customer_id),
+          status,
+          total_price: parseFloat(total_price)
+        }
+      })
+
+      // Step 8: Create all order items (batch)
+      await tx.orderItem.createMany({
+        data: itemsWithPrices.map(item => ({
+          order_id: order.order_id,
+          product_id: item.product_id,
+          quantity: item.quantity,
+          price: item.price
+        }))
+      })
+
+      // Step 9: Fetch complete order with items
+      return await tx.order.findUnique({
+        where: { order_id: order.order_id },
+        include: { items: true }
+      })
+    })
+  }
+
   static async update(order_id, data) {
     const updateData = {}
 

@@ -1,6 +1,7 @@
 const express = require("express");
 const Product = require("./models/product");
 const Order = require("./models/order");
+const prisma = require("./db/db");
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -148,27 +149,68 @@ app.get("/orders/:order_id", async (req, res) => {
     }
 })
 
-// POST /orders - Create a new order
+// POST /orders - Create a new order with items (validate-first flow)
 app.post("/orders", async (req, res) => {
     try {
-        const { customer_id, status, total_price } = req.body
+        const { customer_id, status, items } = req.body
 
-        if (!customer_id || !status || total_price === undefined) {
+        // ========== PHASE 1: VALIDATION (Outside Transaction) ==========
+
+        // Step 1: Validate request structure
+        if (!customer_id || !status || !items || items.length === 0) {
             return res.status(400).json({
-                error: "Missing required fields: customer_id, status, total_price"
+                error: "Missing required fields: customer_id, status, items"
             })
         }
 
-        if (isNaN(total_price) || parseFloat(total_price) < 0) {
-            return res.status(400).json({
-                error: "Invalid total_price: must be a non-negative number"
+        // Validate each item has required fields
+        for (const item of items) {
+            if (!item.product_id || !item.quantity) {
+                return res.status(400).json({
+                    error: "Each item must have product_id and quantity"
+                })
+            }
+            if (isNaN(item.quantity) || parseInt(item.quantity) <= 0) {
+                return res.status(400).json({
+                    error: `Invalid quantity for product ${item.product_id}: must be a positive integer`
+                })
+            }
+        }
+
+        // Step 2: Batch fetch all products
+        const productIds = items.map(item => parseInt(item.product_id))
+        const products = await prisma.product.findMany({
+            where: { id: { in: productIds } }
+        })
+
+        // Step 3: Validate all products exist
+        if (products.length !== productIds.length) {
+            const foundIds = products.map(p => p.id)
+            const missingId = productIds.find(id => !foundIds.includes(id))
+            return res.status(404).json({
+                error: `Product with ID ${missingId} not found`
             })
         }
 
-        const order = await Order.create(customer_id, status, total_price)
+        // Step 4: Build items with prices (snapshot from Product)
+        const productMap = Object.fromEntries(products.map(p => [p.id, p]))
+        const itemsWithPrices = items.map(item => ({
+            product_id: parseInt(item.product_id),
+            quantity: parseInt(item.quantity),
+            price: productMap[parseInt(item.product_id)].price
+        }))
+
+        // Step 5: Calculate total price
+        const total_price = itemsWithPrices
+            .reduce((sum, item) => sum + (item.price * item.quantity), 0)
+
+        // ========== PHASE 2: TRANSACTION (Only Writes) ==========
+
+        const order = await Order.createWithItems(customer_id, status, total_price, itemsWithPrices)
+
         res.status(201).json({ order })
     } catch (error) {
-        res.status(500).json({ error: "Failed to create order" })
+        res.status(500).json({ error: "Transaction failed: unable to create order" })
     }
 })
 
