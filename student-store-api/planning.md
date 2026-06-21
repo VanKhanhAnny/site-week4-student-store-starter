@@ -1039,3 +1039,35 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 - When a Product is deleted, its OrderItems are removed, leaving Orders with fewer line items
 - When an Order is deleted, its OrderItems are removed, but Products remain available
 - **Conclusion:** Both cascade paths work independently without conflicts
+
+---
+
+## Decisions Log — Order Creation Transaction
+
+### What My Transactional Flow Spec Got Right
+
+- **Validate-first approach**: The two-phase pattern (validate outside transaction, writes inside transaction) worked exactly as documented
+- **Batch product fetch**: Using `findMany` with `where: { id: { in: productIds } }` in Step 2 was correct — one query instead of N queries
+- **Price snapshot timing**: Fetching prices during validation and storing them in OrderItem preserves historical accuracy
+- **Step sequence**: The order of operations (validate → calculate → transaction → create order → create items → fetch with includes) executed correctly
+
+### What the Spec Missed During Implementation
+
+- **Empty items array validation**: Spec didn't explicitly require checking `items.length === 0` — added validation to return 400 if items array is empty
+- **Quantity validation**: Spec mentioned validating positive integers but didn't specify the exact error message format — implemented as `Invalid quantity for product X: must be a positive integer`
+- **Transaction method separation**: Created separate `Order.createWithItems()` method instead of putting transaction logic directly in the route handler — better separation of concerns
+- **Missing product error specificity**: Spec said return 404 but didn't specify which product — implementation returns `Product with ID X not found` for better debugging
+
+### How Transaction Error Handling Works
+
+`prisma.$transaction()` wraps all database operations in a PostgreSQL transaction:
+- All operations inside the async callback execute as a single atomic unit
+- If any operation throws an error (foreign key violation, constraint failure, network issue), PostgreSQL rolls back ALL changes made inside the transaction
+- The Order record and OrderItem records are either both committed or both discarded — never partial state
+- Once the transaction callback completes successfully, PostgreSQL commits all changes together
+- If the transaction fails, Prisma throws an error caught by our try/catch, returning 500 to the client
+
+### One Thing I'd Design Differently If Starting Over
+
+**Keep the simple `Order.create()` method for backward compatibility**: Currently we have two create methods (`create` and `createWithItems`). If starting over, I'd replace the simple `create()` entirely with `createWithItems()` and make `items` optional — so the same method handles both simple orders (no items) and complex orders (with items). This would eliminate method duplication while maintaining flexibility.
+
