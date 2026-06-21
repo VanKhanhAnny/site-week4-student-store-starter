@@ -988,3 +988,54 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 - **Spec said:** 201 Created
 - **Implementation:** Returns 201 with the created product in response body
 - **Status:** Confirmed — Express `res.status(201).json(...)` working as expected
+
+---
+
+## Spec Reconciliation — Milestone 4 (Schema Audit)
+
+### Schema vs. Spec Gaps Found
+
+**Product Model:**
+- No gaps found — schema matched spec exactly
+- All fields (id, name, description, price, image_url, category) implemented as specified
+- Auto-increment on `id` working as expected
+
+**Order Model:**
+- No gaps found — schema matched spec exactly
+- All fields (order_id, customer_id, total_price, status, created_at) implemented as specified
+- `created_at` uses `@default(now())` for automatic timestamp
+- Auto-increment on `order_id` working as expected
+
+**OrderItem Model:**
+- Spec said OrderItem.price was "the price at time of purchase" — this is correctly implemented
+- Price snapshot pattern confirmed: OrderItem.price is independent of Product.price after creation
+- All fields (order_item_id, order_id, product_id, quantity, price) implemented as specified
+- Auto-increment on `order_item_id` working as expected
+
+**Relationships:**
+- Product → OrderItem: one-to-many relationship established via `orderItems` field
+- Order → OrderItem: one-to-many relationship established via `items` field
+- OrderItem references both Order and Product via foreign keys
+
+### Cascade Delete Verification
+
+**Deleting a Product removes associated OrderItems: ✅ Tested**
+- Created a product (e.g., product_id: 5)
+- Created an order with order items referencing product 5
+- Deleted product 5 via `DELETE /products/5`
+- Verified: OrderItem records referencing product 5 were automatically deleted
+- Verified: Order itself remained intact (only lost the line items)
+- **Result:** `onDelete: Cascade` on Product → OrderItem relationship working correctly
+
+**Deleting an Order removes associated OrderItems: ✅ Tested**
+- Created an order (e.g., order_id: 1) with multiple order items
+- Deleted order 1 via `DELETE /orders/1`
+- Verified: All OrderItem records with order_id: 1 were automatically deleted
+- Verified: Products referenced by those order items remained intact
+- **Result:** `onDelete: Cascade` on Order → OrderItem relationship working correctly
+
+**Edge Case Tested:**
+- OrderItem sits at the intersection of two cascade rules
+- When a Product is deleted, its OrderItems are removed, leaving Orders with fewer line items
+- When an Order is deleted, its OrderItems are removed, but Products remain available
+- **Conclusion:** Both cascade paths work independently without conflicts
