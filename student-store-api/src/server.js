@@ -10,10 +10,11 @@ app.get("/", (req, res) => {
     res.status(200).send("Student Store API is running");
 });
 
-// GET /products - Fetch all products
+// GET /products - Fetch all products with optional filtering and sorting
 app.get("/products", async (req, res) => {
     try {
-        const products = await Product.getAll()
+        const { category, sort, order } = req.query
+        const products = await Product.getAll({ category, sort, order })
         res.status(200).json({ products })
     } catch (error) {
         res.status(500).json({ error: "Failed to fetch products" })

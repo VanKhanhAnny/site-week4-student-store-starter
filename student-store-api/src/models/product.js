@@ -1,8 +1,31 @@
 const prisma = require('../db/db')
 
 class Product {
-  static async getAll() {
-    return await prisma.product.findMany()
+  static async getAll(filters = {}) {
+    const { category, sort, order } = filters
+
+    const queryOptions = {}
+
+    // Apply category filter
+    if (category) {
+      queryOptions.where = {
+        category: {
+          equals: category,
+          mode: 'insensitive'
+        }
+      }
+    }
+
+    // Apply sorting
+    const validSortFields = ['price', 'name', 'id', 'category']
+    if (sort && validSortFields.includes(sort)) {
+      const sortOrder = order === 'desc' ? 'desc' : 'asc'
+      queryOptions.orderBy = {
+        [sort]: sortOrder
+      }
+    }
+
+    return await prisma.product.findMany(queryOptions)
   }
 
   static async getById(id) {

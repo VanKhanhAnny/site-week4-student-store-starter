@@ -117,8 +117,40 @@ All error responses follow this shape:
 **Request:**
 - Method: GET
 - Path: `/products`
-- Query params: None
 - Body: None
+
+**Query Parameters:**
+All query parameters are optional. If no parameters are provided, all products are returned in unsorted order.
+
+- `category` (string, optional) — Filter products by category (case-insensitive, exact match)
+  - Example: `?category=electronics`
+  - Returns only products where `category` matches the provided value
+  - If the category doesn't exist, returns an empty array (not an error)
+
+- `sort` (string, optional) — Sort products by a specific field
+  - Allowed values: `price`, `name`, `id`, `category`
+  - Default order: ascending (lowest to highest for numbers, A-Z for strings)
+  - Example: `?sort=price` returns products from cheapest to most expensive
+  - Example: `?sort=name` returns products alphabetically by name
+  - Invalid sort values are ignored (returns unsorted results)
+
+- `order` (string, optional) — Sort direction (only applies when `sort` is provided)
+  - Allowed values: `asc` (ascending, default), `desc` (descending)
+  - Example: `?sort=price&order=desc` returns products from most expensive to cheapest
+  - If `order` is provided without `sort`, it is ignored
+
+**Combined Examples:**
+- `GET /products` — all products, unsorted
+- `GET /products?category=Electronics` — only Electronics products, unsorted
+- `GET /products?sort=price` — all products, sorted by price ascending
+- `GET /products?sort=price&order=desc` — all products, sorted by price descending
+- `GET /products?category=Clothing&sort=name` — only Clothing products, sorted alphabetically
+- `GET /products?category=Electronics&sort=price&order=desc` — only Electronics, most expensive first
+
+**Default Behavior:**
+- No `category`: Returns all products regardless of category
+- No `sort`: Returns products in database insertion order (by ID)
+- No `order`: Uses ascending order when sorting
 
 **Success Response:**
 - Status: 200 OK
@@ -905,7 +937,7 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 - All string fields (name, description, image_url, category) mapped directly to PostgreSQL TEXT without size limits, which is appropriate since we're not enforcing character limits at the database level
 
 **Why Float for currency is acceptable here:**
-- This is a student project without real financial transactions
+- This is a simple project without real financial transactions
 - Float precision (15 decimal digits) is sufficient for typical product prices ($0.01 to $9999.99)
 - In production, we would use `Decimal` type for exact currency representation to avoid floating-point errors
 
@@ -928,6 +960,17 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 - **Implementation:** Used try/catch with `error.code === 'P2025'` check in UPDATE and DELETE endpoints
 - **Impact:** Users get clear 404 responses instead of generic 500 errors when trying to modify nonexistent products
 
+**4. Query parameter filtering and sorting (Enhancement):**
+- **Decision:** Extended GET /products to support `category`, `sort`, and `order` query parameters
+- **Reasoning:** Frontend needs to filter products by category and sort by price/name without fetching all products
+- **Implementation:** 
+  - `category` filter uses case-insensitive exact match via Prisma's `mode: 'insensitive'`
+  - `sort` accepts `price`, `name`, `id`, `category` — invalid values are ignored (returns unsorted)
+  - `order` accepts `asc` or `desc` (defaults to `asc` if not provided)
+  - All parameters are optional — no params returns all products unsorted
+- **Impact:** More flexible API for frontend filtering/sorting; backward compatible (no breaking changes)
+- **Example:** `GET /products?category=Electronics&sort=price&order=desc` returns Electronics sorted by price descending
+
 ### Route Behavior Validation
 
 **1. DELETE cascade behavior:**
@@ -945,15 +988,3 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 - **Spec said:** 201 Created
 - **Implementation:** Returns 201 with the created product in response body
 - **Status:** Confirmed — Express `res.status(201).json(...)` working as expected
-
-### Technical Notes
-
-**Model class pattern:**
-- Used static methods in Product class (`Product.getAll()`, `Product.getById()`, etc.) rather than instance methods
-- Reasoning: Keeps the model logic separate from route handlers and makes it easy to swap implementations later
-- All methods are async and use Prisma Client directly
-
-**Input sanitization:**
-- Parse all IDs with `parseInt()` before passing to Prisma
-- Parse price with `parseFloat()` before storing
-- Validates types before database operations to prevent type coercion issues
