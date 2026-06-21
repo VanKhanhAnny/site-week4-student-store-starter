@@ -79,19 +79,6 @@ When an Order is deleted:
 OrderItem stores its own `price` field instead of referencing Product.price. This is intentional:
 - **At order creation time:** The price is fetched from the Product table during validation and copied into OrderItem
 - **After order creation:** The OrderItem.price remains frozen, even if Product.price changes
-- **Why this matters:**
-  - Historical accuracy: orders reflect what the customer actually paid
-  - Price changes don't affect past orders (no retroactive price updates)
-  - Reporting: Order.total_price remains accurate even if product prices fluctuate
-  - Audit trail: can compare historical prices vs current prices
-
-**Example:**
-1. Product "Laptop" has price $999.99
-2. Customer orders 1 Laptop → OrderItem stores price: $999.99
-3. Store updates Product "Laptop" price to $1099.99
-4. OrderItem.price still shows $999.99 (customer paid $999.99, not $1099.99)
-5. Order.total_price remains correct based on snapshot prices
-6. **Key Point:** Updating Product.price has NO effect on existing OrderItems
 
 **Cascade Behavior:**
 OrderItem sits at the intersection of two cascade delete rules:
@@ -906,3 +893,67 @@ Phase 2 (Transaction): Write + Write + Commit
 ```
 
 This separation makes POST /orders both correct (transactional) and efficient (short locks).
+
+---
+
+## Decisions Log — Product Model
+
+### Schema Translation
+**What went smoothly:**
+- `price` as Float — Prisma's Float type maps cleanly to PostgreSQL's DOUBLE PRECISION, which is suitable for product prices in this project
+- Auto-increment on `id` — Prisma's `@id @default(autoincrement())` generated the expected PostgreSQL SERIAL primary key
+- All string fields (name, description, image_url, category) mapped directly to PostgreSQL TEXT without size limits, which is appropriate since we're not enforcing character limits at the database level
+
+**Why Float for currency is acceptable here:**
+- This is a student project without real financial transactions
+- Float precision (15 decimal digits) is sufficient for typical product prices ($0.01 to $9999.99)
+- In production, we would use `Decimal` type for exact currency representation to avoid floating-point errors
+
+### Implementation Decisions Not in Original Spec
+
+**1. Price validation on updates (PUT /products/:id):**
+- **Decision:** Applied the same price validation (must be positive number) to updates as we did for creates
+- **Reasoning:** The spec didn't explicitly state update validation rules, but allowing negative or zero prices would break order calculations
+- **Impact:** PUT requests with invalid prices return 400 Bad Request
+
+**2. Partial updates support:**
+- **Decision:** PUT endpoint allows updating any subset of fields (name, description, price, image_url, category) — not requiring all fields
+- **Reasoning:** The spec said "all fields optional" but didn't specify how to handle empty requests
+- **Implementation:** We validate that at least one field is provided; if no fields, return 400 "No valid fields provided for update"
+- **Impact:** More flexible API — clients can update just the price without resending name/description
+
+**3. Error handling for Prisma codes:**
+- **Decision:** Explicitly catch Prisma error code `P2025` (record not found) and map it to 404 Not Found
+- **Reasoning:** The spec defined 404 responses but didn't specify how to detect them at the database layer
+- **Implementation:** Used try/catch with `error.code === 'P2025'` check in UPDATE and DELETE endpoints
+- **Impact:** Users get clear 404 responses instead of generic 500 errors when trying to modify nonexistent products
+
+### Route Behavior Validation
+
+**1. DELETE cascade behavior:**
+- **Spec said:** "Deleting a Product should also delete any OrderItem records referencing it"
+- **Implementation:** Added `onDelete: Cascade` in Prisma schema (once Order/OrderItem models are added)
+- **Status:** Not testable yet (Order models not implemented), but schema is prepared for future cascade deletes
+- **Note:** In planning.md Section 1, we documented that product deletion will cascade to order items, which may leave orders with missing line items
+
+**2. GET /products response shape:**
+- **Spec said:** Return `{ "products": [...] }` wrapper
+- **Implementation:** Confirmed — all endpoints use singular/plural wrappers (`{ "product": {...} }` for single, `{ "products": [...] }` for list)
+- **Status:** Matches spec exactly, tested and working
+
+**3. POST /products status code:**
+- **Spec said:** 201 Created
+- **Implementation:** Returns 201 with the created product in response body
+- **Status:** Confirmed — Express `res.status(201).json(...)` working as expected
+
+### Technical Notes
+
+**Model class pattern:**
+- Used static methods in Product class (`Product.getAll()`, `Product.getById()`, etc.) rather than instance methods
+- Reasoning: Keeps the model logic separate from route handlers and makes it easy to swap implementations later
+- All methods are async and use Prisma Client directly
+
+**Input sanitization:**
+- Parse all IDs with `parseInt()` before passing to Prisma
+- Parse price with `parseFloat()` before storing
+- Validates types before database operations to prevent type coercion issues
