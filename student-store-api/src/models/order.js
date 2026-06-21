@@ -7,7 +7,14 @@ class Order {
 
   static async getById(order_id) {
     return await prisma.order.findUnique({
-      where: { order_id: parseInt(order_id) }
+      where: { order_id: parseInt(order_id) },
+      include: {
+        items: {
+          include: {
+            product: true
+          }
+        }
+      }
     })
   }
 
