@@ -1069,3 +1069,22 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 
 **Keep the simple `Order.create()` method for backward compatibility**: Currently we have two create methods (`create` and `createWithItems`). If starting over, I'd replace the simple `create()` entirely with `createWithItems()` and make `items` optional — so the same method handles both simple orders (no items) and complex orders (with items). This would eliminate method duplication while maintaining flexibility.
 
+---
+
+## Final Spec Reconciliation: Project Complete
+
+### Full-system audit result
+- All 11 resource endpoints in the API contract (`/products` and `/orders` CRUD + detail routes) plus the health route (`GET /`) are implemented and wired in `server.js`.
+- Response wrappers and core payload shapes matched the written contract during integration (`{ products }`, `{ product }`, `{ orders }`, `{ order }`, `{ error }`).
+- Found and documented implementation detail not originally emphasized in early spec drafts: CORS is enabled globally via `app.use(cors())`, which allowed the Vite frontend (`localhost:5173`) to call the API (`localhost:3001`) without cross-origin errors.
+- Product filtering/sorting enhancement (`category`, `sort`, `order`) is fully implemented and now aligned with the expanded API contract in this document.
+
+### Gaps resolved during frontend integration
+- Frontend cart state uses string keys for product IDs, while backend order validation expects numeric IDs; checkout now resolves this by converting IDs with `parseInt(productId)` before POSTing `items`.
+- Frontend checkout needed an explicit `customer_id` integer, but UI state (`userInfo`) only tracked `name` and `dorm_number`; for project completion this was resolved with a fixed `customer_id: 1` in checkout payload construction.
+- Frontend and backend field names were reconciled to stay consistent with the spec (`product_id`, `customer_id`, `total_price`, `image_url`) and avoid snake_case/camelCase drift.
+- No breaking contract mismatches remained after integration: `GET /products`, `GET /products/:id`, and `POST /orders` all matched expected request/response shapes used by the UI.
+
+### What the spec enabled during this project
+Because the data models and endpoint contracts were written up front, frontend integration was mostly about wiring state and transforms rather than guessing payload formats. The spec also made debugging faster: when a request failed, we could quickly isolate whether the issue was route behavior, validation rules, or frontend data shaping by checking against a single source of truth.
+
