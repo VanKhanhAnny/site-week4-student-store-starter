@@ -36,7 +36,48 @@ function App() {
     setSearchInputValue(event.target.value);
   };
 
+  // Fetch all products on mount
+  useEffect(() => {
+    const fetchProducts = async () => {
+      setIsFetching(true);
+      setError(null);
+      try {
+        const response = await axios.get("http://localhost:3001/products");
+        setProducts(response.data.products);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setIsFetching(false);
+      }
+    };
+    fetchProducts();
+  }, []);
+
   const handleOnCheckout = async () => {
+    setIsCheckingOut(true);
+    setError(null);
+
+    try {
+      // Transform cart object to items array
+      const items = Object.keys(cart).map(productId => ({
+        product_id: parseInt(productId),
+        quantity: cart[productId]
+      }));
+
+      const orderData = {
+        customer_id: 1, // Hardcoded for student project
+        status: "pending",
+        items: items
+      };
+
+      const response = await axios.post("http://localhost:3001/orders", orderData);
+      setOrder(response.data.order);
+      setCart({}); // Clear cart after successful order
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsCheckingOut(false);
+    }
   }
 
 

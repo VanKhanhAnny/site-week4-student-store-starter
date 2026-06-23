@@ -1054,9 +1054,7 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 ### What the Spec Missed During Implementation
 
 - **Empty items array validation**: Spec didn't explicitly require checking `items.length === 0` — added validation to return 400 if items array is empty
-- **Quantity validation**: Spec mentioned validating positive integers but didn't specify the exact error message format — implemented as `Invalid quantity for product X: must be a positive integer`
 - **Transaction method separation**: Created separate `Order.createWithItems()` method instead of putting transaction logic directly in the route handler — better separation of concerns
-- **Missing product error specificity**: Spec said return 404 but didn't specify which product — implementation returns `Product with ID X not found` for better debugging
 
 ### How Transaction Error Handling Works
 

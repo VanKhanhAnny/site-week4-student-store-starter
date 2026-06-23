@@ -1,4 +1,5 @@
 const express = require("express");
+const cors = require("cors");
 const Product = require("./models/product");
 const Order = require("./models/order");
 const prisma = require("./db/db");
@@ -6,6 +7,7 @@ const prisma = require("./db/db");
 const app = express()
 const PORT = process.env.PORT || 3001
 
+app.use(cors());
 app.use(express.json())
 
 app.get("/", (req, res) => {
