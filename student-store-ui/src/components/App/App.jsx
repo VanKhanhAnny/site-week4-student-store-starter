@@ -42,7 +42,7 @@ function App() {
       setIsFetching(true);
       setError(null);
       try {
-        const response = await axios.get("http://localhost:3001/products");
+        const response = await axios.get(`${import.meta.env.VITE_API_URL}/products`);
         setProducts(response.data.products);
       } catch (err) {
         setError(err.message);
@@ -70,7 +70,7 @@ function App() {
         items: items
       };
 
-      const response = await axios.post("http://localhost:3001/orders", orderData);
+      const response = await axios.post(`${import.meta.env.VITE_API_URL}/orders`, orderData);
       setOrder(response.data.order);
       setCart({}); // Clear cart after successful order
     } catch (err) {

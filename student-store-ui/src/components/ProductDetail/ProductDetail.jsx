@@ -18,7 +18,7 @@ function ProductDetail({ addToCart, removeFromCart, getQuantityOfItemInCart }) {
       setIsFetching(true);
       setError(null);
       try {
-        const response = await axios.get(`http://localhost:3001/products/${productId}`);
+        const response = await axios.get(`${import.meta.env.VITE_API_URL}/products/${productId}`);
         setProduct(response.data.product);
       } catch (err) {
         setError(err.message);
