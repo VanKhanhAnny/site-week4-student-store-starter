@@ -1,6 +1,15 @@
 const prisma = require('../db/db')
 
 class OrderItem {
+  static async getAll() {
+    return await prisma.orderItem.findMany({
+      include: {
+        product: true,
+        order: true
+      }
+    })
+  }
+
   static async getByOrderId(order_id) {
     return await prisma.orderItem.findMany({
       where: { order_id: parseInt(order_id) },

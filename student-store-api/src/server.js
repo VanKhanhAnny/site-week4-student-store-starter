@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const Product = require("./models/product");
 const Order = require("./models/order");
+const OrderItem = require("./models/orderItem");
 const prisma = require("./db/db");
 
 const app = express()
@@ -120,10 +121,11 @@ app.delete("/products/:id", async (req, res) => {
     }
 })
 
-// GET /orders - Fetch all orders
+// GET /orders - Fetch all orders with optional email filter
 app.get("/orders", async (req, res) => {
     try {
-        const orders = await Order.getAll()
+        const { email } = req.query
+        const orders = await Order.getAll({ email })
         res.status(200).json({ orders })
     } catch (error) {
         res.status(500).json({ error: "Failed to fetch orders" })
@@ -154,7 +156,7 @@ app.get("/orders/:order_id", async (req, res) => {
 // POST /orders - Create a new order with items (validate-first flow)
 app.post("/orders", async (req, res) => {
     try {
-        const { customer_id, status, items } = req.body
+        const { customer_id, customer_email, status, items } = req.body
 
         // ========== PHASE 1: VALIDATION (Outside Transaction) ==========
 
@@ -208,7 +210,7 @@ app.post("/orders", async (req, res) => {
 
         // ========== PHASE 2: TRANSACTION (Only Writes) ==========
 
-        const order = await Order.createWithItems(customer_id, status, total_price, itemsWithPrices)
+        const order = await Order.createWithItems(customer_id, status, total_price, itemsWithPrices, customer_email)
 
         res.status(201).json({ order })
     } catch (error) {
@@ -266,6 +268,97 @@ app.delete("/orders/:order_id", async (req, res) => {
     }
 })
 
-app.listen(PORT, () => {
+// GET /order-items - Fetch all order items (Stretch Feature)
+app.get("/order-items", async (req, res) => {
+    try {
+        const orderItems = await OrderItem.getAll()
+        res.status(200).json({ orderItems })
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch order items" })
+    }
+})
+
+// POST /orders/:order_id/items - Add a new item to an existing order (Stretch Feature)
+app.post("/orders/:order_id/items", async (req, res) => {
+    try {
+        const { order_id } = req.params
+        const { product_id, quantity } = req.body
+
+        // Validate order_id
+        if (isNaN(order_id)) {
+            return res.status(400).json({ error: "Invalid order ID" })
+        }
+
+        // Validate request body
+        if (!product_id || !quantity) {
+            return res.status(400).json({
+                error: "Missing required fields: product_id, quantity"
+            })
+        }
+
+        if (isNaN(quantity) || parseInt(quantity) <= 0) {
+            return res.status(400).json({
+                error: "Invalid quantity: must be a positive integer"
+            })
+        }
+
+        // Check if order exists
+        const order = await Order.getById(order_id)
+        if (!order) {
+            return res.status(404).json({ error: "Order not found" })
+        }
+
+        // Check if product exists and get its current price
+        const product = await Product.getById(product_id)
+        if (!product) {
+            return res.status(404).json({ error: `Product with ID ${product_id} not found` })
+        }
+
+        // Create the order item with current product price
+        const orderItem = await OrderItem.create(
+            order_id,
+            product_id,
+            quantity,
+            product.price
+        )
+
+        // Update order total_price
+        const itemPrice = product.price * parseInt(quantity)
+        const newTotalPrice = order.total_price + itemPrice
+        await Order.update(order_id, { total_price: newTotalPrice })
+
+        res.status(201).json({ orderItem })
+    } catch (error) {
+        res.status(500).json({ error: "Failed to add item to order" })
+    }
+})
+
+const server = app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`)
-});
+})
+
+const shutdown = async (signal) => {
+    console.log(`\nReceived ${signal}. Shutting down server...`)
+
+    server.close(async () => {
+        try {
+            await prisma.$disconnect()
+            console.log("Database disconnected")
+        } catch (error) {
+            console.error("Error while disconnecting database:", error)
+        } finally {
+            process.exit(0)
+        }
+    })
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"))
+process.on("SIGTERM", () => shutdown("SIGTERM"))
+process.on("SIGHUP", () => shutdown("SIGHUP"))
+
+// Nodemon sends SIGUSR2 on restarts; allow clean restart handling.
+process.once("SIGUSR2", () => {
+    shutdown("SIGUSR2").finally(() => {
+        process.kill(process.pid, "SIGUSR2")
+    })
+})

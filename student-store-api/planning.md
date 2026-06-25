@@ -33,6 +33,7 @@ When a Product is deleted:
 **Fields:**
 - `order_id` - Int - Primary Key - Auto-incrementing - Required
 - `customer_id` - Int - Required
+- `customer_email` - String - Optional (added for email filtering feature)
 - `total_price` - Float - Required
 - `status` - String - Required
 - `created_at` - DateTime - Required - Default: `now()`
@@ -321,21 +322,46 @@ All query parameters are optional. If no parameters are provided, all products a
 **Request:**
 - Method: GET
 - Path: `/orders`
-- Query params: None
+- Query params:
+  - `email` (string, optional) — Filter orders by customer email (case-insensitive partial match)
 - Body: None
+
+**Query Parameters:**
+- `email` (string, optional) — Filter orders by customer email
+  - Example: `?email=alice@example.com` returns orders for alice@example.com
+  - Example: `?email=alice` returns all orders containing "alice" in the email
+  - Case-insensitive: `?email=ALICE` matches "alice@example.com"
+  - Returns empty array if no orders match the email filter
 
 **Success Response:**
 - Status: 200 OK
-- Body:
+- Body (includes order items with product details):
 ```json
 {
   "orders": [
     {
       "order_id": 1,
       "customer_id": 123,
+      "customer_email": "alice@example.com",
       "total_price": 1999.98,
       "status": "pending",
-      "created_at": "2026-06-20T10:30:00Z"
+      "created_at": "2026-06-20T10:30:00Z",
+      "items": [
+        {
+          "order_item_id": 1,
+          "product_id": 5,
+          "quantity": 2,
+          "price": 999.99,
+          "product": {
+            "id": 5,
+            "name": "Laptop",
+            "description": "High-performance laptop",
+            "price": 999.99,
+            "image_url": "https://example.com/laptop.jpg",
+            "category": "Electronics"
+          }
+        }
+      ]
     }
   ]
 }
@@ -401,6 +427,7 @@ All query parameters are optional. If no parameters are provided, all products a
 ```json
 {
   "customer_id": 123,
+  "customer_email": "alice@example.com",
   "status": "pending",
   "items": [
     {
@@ -415,6 +442,8 @@ All query parameters are optional. If no parameters are provided, all products a
 }
 ```
 
+**Note:** `customer_email` is optional but recommended for order filtering functionality.
+
 **Success Response:**
 - Status: 201 Created
 - Body:
@@ -423,6 +452,7 @@ All query parameters are optional. If no parameters are provided, all products a
   "order": {
     "order_id": 1,
     "customer_id": 123,
+    "customer_email": "alice@example.com",
     "total_price": 2499.97,
     "status": "pending",
     "created_at": "2026-06-20T10:30:00Z",
@@ -521,6 +551,103 @@ All query parameters are optional. If no parameters are provided, all products a
 
 **Side Effects:**
 - All OrderItem records belonging to this order will be cascade deleted
+
+---
+
+### Order Item Endpoints (Stretch Features)
+
+#### GET /order-items
+**Request:**
+- Method: GET
+- Path: `/order-items`
+- Query params: None
+- Body: None
+
+**Success Response:**
+- Status: 200 OK
+- Body (includes related product and order data):
+```json
+{
+  "orderItems": [
+    {
+      "order_item_id": 1,
+      "order_id": 1,
+      "product_id": 5,
+      "quantity": 2,
+      "price": 999.99,
+      "product": {
+        "id": 5,
+        "name": "Laptop",
+        "description": "High-performance laptop",
+        "price": 999.99,
+        "image_url": "https://example.com/laptop.jpg",
+        "category": "Electronics"
+      },
+      "order": {
+        "order_id": 1,
+        "customer_id": 123,
+        "total_price": 1999.98,
+        "status": "pending",
+        "created_at": "2026-06-20T10:30:00Z"
+      }
+    }
+  ]
+}
+```
+
+**Error Response:**
+- Status: 500 Internal Server Error
+- Body: `{ "error": "Failed to fetch order items" }`
+
+---
+
+#### POST /orders/:order_id/items
+**Request:**
+- Method: POST
+- Path: `/orders/:order_id/items`
+- Route params: `order_id` (integer)
+- Body:
+```json
+{
+  "product_id": 5,
+  "quantity": 2
+}
+```
+
+**Success Response:**
+- Status: 201 Created
+- Body:
+```json
+{
+  "orderItem": {
+    "order_item_id": 3,
+    "order_id": 1,
+    "product_id": 5,
+    "quantity": 2,
+    "price": 999.99
+  }
+}
+```
+
+**Error Responses:**
+- Status: 400 Bad Request
+- Body: `{ "error": "Invalid order ID" }`
+
+- Status: 400 Bad Request
+- Body: `{ "error": "Missing required fields: product_id, quantity" }`
+
+- Status: 400 Bad Request
+- Body: `{ "error": "Invalid quantity: must be a positive integer" }`
+
+- Status: 404 Not Found
+- Body: `{ "error": "Order not found" }`
+
+- Status: 404 Not Found
+- Body: `{ "error": "Product with ID 5 not found" }`
+
+**Side Effects:**
+- Order's `total_price` is automatically updated to include the new item's cost
+- Price is captured from the Product at the time of adding (price snapshot pattern)
 
 ---
 
@@ -1087,4 +1214,78 @@ This separation makes POST /orders both correct (transactional) and efficient (s
 
 ### What the spec enabled during this project
 Because the data models and endpoint contracts were written up front, frontend integration was mostly about wiring state and transforms rather than guessing payload formats. The spec also made debugging faster: when a request failed, we could quickly isolate whether the issue was route behavior, validation rules, or frontend data shaping by checking against a single source of truth.
+
+---
+
+## Decisions Log — Stretch Feature: Order Item Endpoints
+
+### GET /order-items Implementation
+- **Decision:** Include both product and order data in the response using Prisma's `include` clause
+- **Reasoning:** Provides complete context for each order item without requiring additional API calls
+- **Impact:** Clients can display order items with full product details and order context in a single request
+
+### POST /orders/:order_id/items Implementation
+- **Key Design Decision:** Automatically update the parent order's `total_price` when adding an item
+- **Reasoning:** 
+  - Maintains consistency: order total always reflects the sum of its items
+  - Prevents stale totals: clients don't need to manually recalculate
+  - Matches the pattern from POST /orders (server-side price calculation)
+- **Price Snapshot Pattern:** Uses current product price at time of adding, not historical price
+- **Validation Flow:**
+  1. Validate order exists (404 if not)
+  2. Validate product exists (404 if not)
+  3. Capture current product price
+  4. Create order item with captured price
+  5. Update order total_price by adding (price × quantity)
+- **What This Endpoint Enables:**
+  - Adding items to existing orders (e.g., "add another item to your recent order")
+  - Order modification workflows in the UI
+  - Backend-driven cart updates
+
+### Testing Results
+- ✅ GET /order-items: Returns all order items with product and order details
+- ✅ POST /orders/:order_id/items: Successfully adds item and updates order total
+- ✅ Error handling: Returns 404 for non-existent orders and products
+- ✅ Price snapshot: Captures current product price at time of adding
+
+---
+
+## Decisions Log — Stretch Feature: Email Filtering
+
+### Schema Change: Adding customer_email Field
+- **Decision:** Added `customer_email` as an optional String field to the Order model
+- **Reasoning:** 
+  - Existing orders had `customer_id` (Int) only, which doesn't support filtering by email
+  - Making it optional ensures backward compatibility with existing code
+  - Real-world e-commerce systems track customer email for order confirmation/tracking
+- **Migration:** Created migration `add_customer_email_to_orders` to alter the orders table
+
+### GET /orders Email Filtering Implementation
+- **Filter Type:** Case-insensitive partial match using Prisma's `contains` with `mode: 'insensitive'`
+- **Why partial match?**
+  - More flexible UX: users can type "alice" instead of full "alice@example.com"
+  - Frontend search input can show results as user types
+  - Matches common e-commerce search patterns
+- **Query Parameter:** `?email=<search_term>`
+- **Empty Results:** Returns `{ "orders": [] }` when no matches found (not an error)
+- **Enhanced Response:** Now includes order items with product details by default (better for UI display)
+
+### Order Creation Updates
+- **Decision:** Accept `customer_email` in POST /orders request body
+- **Implementation:** Updated both `Order.create()` and `Order.createWithItems()` to accept optional email parameter
+- **Frontend Impact:** Frontend checkout must now send `customer_email` field to enable filtering
+
+### Testing Results
+- ✅ Exact email match: `?email=alice@example.com` returns alice's orders
+- ✅ Partial match: `?email=alice` returns alice's orders
+- ✅ Case-insensitive: `?email=ALICE@EXAMPLE.COM` returns alice's orders
+- ✅ No results: `?email=nobody@example.com` returns empty array (not 500 error)
+- ✅ All orders: No `email` parameter returns all orders with items included
+- ✅ Order creation: Orders created with email field are properly stored and filterable
+
+### What This Enables
+- **Past Orders Page:** Users can search their order history by email
+- **Customer Support:** Support staff can quickly look up orders by customer email
+- **Analytics:** Track order counts per customer email
+- **Future Enhancement:** Could add exact match mode or multiple filter fields (status + email)
 

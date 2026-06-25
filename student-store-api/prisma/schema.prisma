@@ -26,6 +26,7 @@ model Product {
 model Order {
   order_id    Int         @id @default(autoincrement())
   customer_id Int
+  customer_email String?
   total_price Float
   status      String
   created_at  DateTime    @default(now())
