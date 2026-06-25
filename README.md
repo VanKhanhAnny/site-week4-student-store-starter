@@ -100,13 +100,13 @@ Deployed Application (optional): [Student Store Deployed Site](https://site-week
 
 `TODO://` Add the embedded URL code to your animated app walkthrough below, `ADD_EMBEDDED_CODE_HERE`. Make sure the video or gif actually renders and animates when viewing this README. (🚫 Remove this paragraph after adding walkthrough video)
 
-`ADD_EMBEDDED_CODE_HERE`
+`https://www.loom.com/share/1472926ce68742e99c5935dc3e0167f8`
 
 ### Reflection
 
 * Did the topics discussed in your labs prepare you to complete the assignment? Be specific, which features in your weekly assignment did you feel unprepared to complete?
 
-Yes, the labs prepared me well for setting up Prisma and understanding how the ORM connects to PostgreSQL. The lab exercises on schema design and CRUD operations gave me a solid foundation for building the Product, Order, and OrderItem models. However, I felt less prepared for the transactional flow in `POST /orders` — handling multiple table writes atomically with `prisma.$transaction()` was new to me, and I had to research how to validate products before creating the order to ensure data integrity. The cascade delete behavior also required extra reading to understand how `onDelete: Cascade` works with foreign key relationships.
+Yes, the labs prepared me well for setting up Prisma. The lab exercises on schema design and CRUD operations gave me a solid foundation for building the Product, Order, and OrderItem models.
 
 * If you had more time, what would you have done differently? Would you have added additional features? Changed the way your project responded to a particular event, etc.
   
@@ -120,10 +120,7 @@ If I had more time, I would have:
 
 * Reflect on your project demo, what went well? Were there things that maybe didn't go as planned? Did you notice something that your peer did that you would like to try next time?
 
-I did not have a project demo this time, but I observed my friends' presentations. I noticed they put a lot of effort into making their demos clear and easy to follow — walking through each feature step-by-step. Next time, I'd like to:
-- Prepare a structured demo script that highlights the most complex features (like the transactional order creation)
-- Use **Prisma Studio** to visually demonstrate cascade deletes
-- Practice explaining technical decisions out loud to make my walkthrough more confident
+I did not have a project demo this time, but I observed my friends' presentations. I noticed they put a lot of effort into making their demos clear and easy to follow — walking through each feature step-by-step
 
 ### Open-source libraries used
 
